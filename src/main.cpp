@@ -6,6 +6,7 @@
 #include <set>
 #include <memory>
 #include <cassert>
+#include <string>
 
 #include <opencv2/opencv.hpp>
 
@@ -13,29 +14,51 @@ using namespace std;
 using namespace cv;
 
 
+enum SIDE {RIGHT = true, LEFT = false};
 
 struct RCCode {
 
-    struct chain {
-        vector<uint8_t> vals;
-        RCCode* const maxpoint;
-        bool right;
+    struct Elem {
+        struct Chain {
+            vector<uint8_t> vals;
+            unsigned elem; // index of the corresponding elem in the vector
+            bool right;
 
-        chain(RCCode *RCCode_, bool right_) : maxpoint(RCCode_), right(right_) {}
-        auto push_back(uint8_t val) -> decltype(vals.push_back(val)) { return vals.push_back(val); }
-        auto begin() { return vals.begin(); }
-        auto begin() const { return vals.begin(); }
-        auto end() { return vals.end(); }
-        auto end() const { return vals.end(); }
+            Chain(unsigned elem_, bool right_) : elem(elem_), right(right_) {}
+            auto push_back(uint8_t val) -> decltype(vals.push_back(val)) { return vals.push_back(val); }
+            auto begin() { return vals.begin(); }
+            auto begin() const { return vals.begin(); }
+            auto end() { return vals.end(); }
+            auto end() const { return vals.end(); }
+        };
+
+        unsigned row, col;
+        Chain left;
+        Chain right;
+        unsigned next; // vector index of the elem whose left chain is linked to this elem right chain
+
+        Elem(unsigned r_, unsigned c_, unsigned elem_) : row(r_), col(c_), left(elem_, false), right(elem_, true), next(elem_) {}
+
+        Chain& operator[](bool right_) {
+            if (right_) return right;
+            else return left;
+        }
+        const Chain& operator[](bool right_) const {
+            if (right_) return right;
+            else return left;
+        }
     };
 
-    unsigned row, col;
-    chain left;
-    chain right;
-    RCCode* next = nullptr;
-    bool used = false;
+    vector<Elem> data;
 
-    RCCode(unsigned r_, unsigned c_) : row(r_), col(c_), left(this, false), right(this, true), next(this) {}
+    void AddElem(unsigned r_, unsigned c_) {
+        data.emplace_back(r_, c_, data.size());
+    }
+
+    size_t Size() const { return data.size(); }
+
+    Elem& operator[](unsigned pos) { return data[pos]; }
+    const Elem& operator[](unsigned pos) const { return data[pos]; }
 };
 
 
@@ -48,7 +71,7 @@ struct ChainCode {
 
         Chain(unsigned row_, unsigned col_) : row(row_), col(col_) {}
 
-        void AddRightChain(const RCCode::chain& chain) {
+        void AddRightChain(const RCCode::Elem::Chain& chain) {
 
             for (auto val : chain.vals) {
                 uint8_t new_val;
@@ -63,7 +86,7 @@ struct ChainCode {
 
         }
 
-        void AddLeftChain(const RCCode::chain& chain) {
+        void AddLeftChain(const RCCode::Elem::Chain& chain) {
 
             for (auto it = chain.vals.rbegin(); it != chain.vals.rend(); it++) {
                 const uint8_t& val = *it;
@@ -74,40 +97,54 @@ struct ChainCode {
             }
         }
 
+        const uint8_t& operator[](size_t pos) const { return vals[pos]; }
+        //vector<Chain>::iterator begin() { return chains.begin(); }
+        vector<uint8_t>::const_iterator begin() const { return vals.begin(); }
+        //vector<Chain>::iterator end() { return chains.end(); }
+        vector<uint8_t>::const_iterator end() const { return vals.end(); }
+
     };
 
     vector<Chain> chains;
 
-    // Attenzione! Modifica il RCCode.
-    void AddChain(RCCode* rccode) {
+    const Chain& operator[](size_t pos) const { return chains[pos]; }
+    //vector<Chain>::iterator begin() { return chains.begin(); }
+    vector<Chain>::const_iterator begin() const { return chains.begin(); }
+    //vector<Chain>::iterator end() { return chains.end(); }
+    vector<Chain>::const_iterator end() const { return chains.end(); }
 
-        Chain new_chain(rccode->row, rccode->col);
+    void AddChain(const RCCode& rccode, vector<bool>& used_elems, unsigned pos) {
 
-        new_chain.AddRightChain(rccode->right);
+        Chain new_chain(rccode[pos].row, rccode[pos].col);
 
-        rccode->used = true;
+        new_chain.AddRightChain(rccode[pos].right);
+
+        used_elems[pos] = true;
 
         while (true) {
 
-            rccode = rccode->next;
-            new_chain.AddLeftChain(rccode->left);
+            pos = rccode[pos].next;
+            new_chain.AddLeftChain(rccode[pos].left);
 
-            if (rccode->used) {
+            if (used_elems[pos]) {
                 break;
             }
 
-            new_chain.AddRightChain(rccode->right);
-            rccode->used = true;
+            new_chain.AddRightChain(rccode[pos].right);
+
+            used_elems[pos] = true;
         }
 
         chains.push_back(new_chain);
     }
 
-    // Attenzione! Modifica i RCCode.
-    ChainCode(const vector<unique_ptr<RCCode>>& rccodes) {
-        for (const unique_ptr<RCCode>& RCCode_ptr : rccodes) {
-            if (!RCCode_ptr->used) {
-                AddChain(RCCode_ptr.get());
+    ChainCode(const RCCode& rccode) {
+        vector<bool> used_elems;
+        used_elems.resize(rccode.Size(), false);
+
+        for (unsigned i = 0; i < rccode.Size(); i++) {
+            if (!used_elems[i]) {
+                AddChain(rccode, used_elems, i);
             }
         }
     }
@@ -270,19 +307,21 @@ struct TemplateCheck {
     }
 };
 
-// Connect the two chains preceding the parameter iterator and removes them from the list
-void ConnectChains(list<RCCode::chain*>& chains, list<RCCode::chain*>::iterator& it /*, bool sopra = false*/) {
 
-    list<RCCode::chain*>::iterator first_it = it;
+// Connects the two chains preceding the parameter iterator and removes them from the list
+// The pair<unsigned, bool> represents a chain
+void ConnectChains(RCCode& rccode, list<pair<unsigned, bool>>& chains, list<pair<unsigned, bool>>::iterator& it) {
+
+    list<pair<unsigned, bool>>::iterator first_it = it;
     first_it--;
-    list<RCCode::chain*>::iterator second_it = first_it;
+    list<pair<unsigned, bool>>::iterator second_it = first_it;
     second_it--;
 
-    if ((*first_it)->right) {
-        (*first_it)->maxpoint->next = (*second_it)->maxpoint;
+    if ((*first_it).second) {
+        rccode[(*first_it).first].next = (*second_it).first;
     }
     else {
-        (*second_it)->maxpoint->next = (*first_it)->maxpoint;
+        rccode[(*second_it).first].next = (*first_it).first;
     }
 
     // Remove chains from list
@@ -290,241 +329,313 @@ void ConnectChains(list<RCCode::chain*>& chains, list<RCCode::chain*>::iterator&
 }
 
 
-
-
-
 int main(void) {
 
-    Mat1b mat(5, 5);
-    mat <<
-        1, 1, 1, 0, 0,
-        0, 0, 1, 1, 1,
-        1, 1, 0, 0, 1,
-        0, 0, 1, 1, 1,
-        1, 0, 0, 0, 1;
+    unsigned n_tests = 100000;
+    unsigned rows = 50;
+    unsigned cols = 50;
+    unsigned arrow_length = 50;
 
-    vector<unique_ptr<RCCode>> RCCodes;
+    Mat1b mat(rows, cols);
+    // mat <<
+        //1, 0, 0, 0, 1,
+        //0, 1, 1, 1, 1,
+        //0, 1, 1, 0, 1,
+        //0, 1, 1, 1, 1,
+        //1, 0, 0, 0, 0;
 
-    list<RCCode::chain*> chains;
+    RNG rng;
 
-    // Build Raster Scan Chain Code
-    for (int r = 0; r < mat.rows; r++) {
-        list<RCCode::chain*>::iterator it = chains.begin();
+    string arrow = "|";
+    for (unsigned i = 0; i < arrow_length; i++) {
+        arrow += ' ';
+    }
+    arrow += '|';
 
-        // how may former chains can receive horizontal (0) links
-        uint8_t back = 0;
+    for (unsigned i = 0; i < n_tests; i++) {
 
-        //unsigned chains_met = 0;
+        // Update arrow
+        unsigned arrow_pos = i / ((n_tests) / arrow_length) + 1;
+        arrow[arrow_pos] = '>';
+        if (arrow[arrow_pos - 1] == '>') {
+            arrow[arrow_pos - 1] = '=';
+        }
+        cout << '\r' << arrow;
 
-        for (int c = 0; c < mat.cols; c++) {
-            PixelInfo info = TemplateCheck::Check(mat, r, c);
+        rng.fill(mat, RNG::UNIFORM, 0, 2);
 
-            list<uint8_t>::iterator match_it = info.links.begin();
+        // RCCode building algorithm
+        RCCode rccode;
 
-            list<uint8_t>& l = info.links;
+        list<pair<unsigned, bool>> chains;
 
-            bool last_found_right = false;
+        for (int r = 0; r < mat.rows; r++) {
+            list<pair<unsigned, bool>>::iterator it = chains.begin();
 
-            bool second_link_equal_to_third_link = false;
+            // How may former chains can receive horizontal (0) links
+            uint8_t back = 0;
 
-            if (match_it != info.links.end()) {
+            for (int c = 0; c < mat.cols; c++) {
+                PixelInfo info = TemplateCheck::Check(mat, r, c);
 
-                // Move the list iterator back if 0 can be added to former chains
-                if ((*match_it) / 2 == 0 /*&& back >= 1*/) {
-                    it--;
-                    match_it++;
-                    if ((match_it != l.end()) && (*match_it) / 2 == 0 /*&& back >= 2*/) {
+                list<uint8_t>::iterator match_it = info.links.begin();
+
+                list<uint8_t>& l = info.links;
+
+                bool last_found_right = false;
+
+                bool second_link_equal_to_third_link = false;
+
+                if (match_it != info.links.end()) {
+
+                    // Move the list iterator back if 0 can be added to former chains
+                    if ((*match_it) / 2 == 0) {
                         it--;
+                        match_it++;
+                        if ((match_it != l.end()) && (*match_it) / 2 == 0) {
+                            it--;
+                        }
                     }
-                }
-                back = 0;
+                    back = 0;
 
-                // Run through the list of template matches
-                match_it = l.begin();
+                    // Run through the list of template matches
+                    match_it = l.begin();
 
-                // Chains' links
-                uint8_t links_found = 0;
-                for (; l.size() > 0 && match_it != l.end();) {
-                    uint8_t val = (*match_it);
-                    if (val > (4 * 2)) {
-                        break;
-                    }
-                    (*it)->push_back(val / 2);
-                    back++;
-                    links_found++;
-                    //chains_met++;
-                    last_found_right = (*it)->right;
-                    it++;
+                    // Chains' links
+                    uint8_t links_found = 0;
+                    for (; l.size() > 0 && match_it != l.end();) {
+                        uint8_t val = (*match_it);
+                        if (val > (4 * 2)) {
+                            break;
+                        }
+                        rccode[(*it).first][(*it).second].push_back(val / 2);
+                        back++;
+                        links_found++;
+                        //chains_met++;
+                        last_found_right = (*it).second;
+                        it++;
 
-                    // Detect and resolve Min point
-                    list<uint8_t>::iterator match_it_cur = l.end();
+                        // Detect and resolve Min point
+                        list<uint8_t>::iterator match_it_cur = l.end();
 
-                    if (match_it != l.begin()) {
-                        match_it_cur = match_it;
-                    }
+                        if (match_it != l.begin()) {
+                            match_it_cur = match_it;
+                        }
 
-                    match_it++;
+                        match_it++;
 
-                    if (links_found > 2 && match_it_cur != l.end()) {
-                        list<uint8_t>::iterator match_it_prev = match_it_cur;
-                        match_it_prev--;
-                        if ((val / 2) != ((*match_it_prev) / 2)) {
+                        if (links_found > 2 && match_it_cur != l.end()) {
+                            list<uint8_t>::iterator match_it_prev = match_it_cur;
+                            match_it_prev--;
+                            if ((val / 2) != ((*match_it_prev) / 2)) {
 
-                            //// Check that this point is indeed a Min point
-                            //list<uint8_t>::iterator min_it = match_it;
-                            //for (; min_it != l.end() && (*min_it) < 254; min_it++) {
-                            //    if ((*min_it) == 253) {
-                            //        break;
-                            //    }
-                            //}
-                            //if (min_it != l.end() && (*min_it) == 253) {
+                                //// Check that this point is indeed a Min point
+                                //list<uint8_t>::iterator min_it = match_it;
+                                //for (; min_it != l.end() && (*min_it) < 254; min_it++) {
+                                //    if ((*min_it) == 253) {
+                                //        break;
+                                //    }
+                                //}
+                                //if (min_it != l.end() && (*min_it) == 253) {
 
-                            if (info.min_points > 0) {
+                                if (info.min_points > 0) {
 
-                                ConnectChains(chains, it);
+                                    ConnectChains(rccode, chains, it);
 
-                                // Remove values from match list
-                                l.erase(match_it_prev, match_it);
+                                    // Remove values from match list
+                                    l.erase(match_it_prev, match_it);
 
-                                // Remove Min point from info
-                                info.min_points--;
+                                    // Remove Min point from info
+                                    info.min_points--;
 
-                                back -= 2;
+                                    back -= 2;
+                                }
+                            }
+                            else {
+                                second_link_equal_to_third_link = true;
                             }
                         }
-                        else {
-                            second_link_equal_to_third_link = true;
+
+                    }
+
+                    // Other Min points
+                    //for (; match_it != l.end(); match_it++) {
+                    //    if ((*match_it) != 253) {
+                    //        break;
+                    //    }
+
+                    //    // New Min point
+                    //    ConnectChains(chains, it, false);
+                    //    back -= 2;
+
+                    //    //if (min_points_found == 0) {
+
+                    //    //}
+                    //    //else {
+                    //    //    min_points_found--;
+                    //    //}
+                    //}
+
+                    assert(info.min_points < 2);
+
+                    if (info.min_points == 1) {
+                        // New Min point
+                        if (l.size() == 2) {
+                            ConnectChains(rccode, chains, it);
                         }
+                        if (l.size() == 3) {
+                            if (second_link_equal_to_third_link) {
+                                list<pair<unsigned, bool>>::iterator third_chain = it;
+                                third_chain--;
+                                ConnectChains(rccode, chains, third_chain);
+                                back -= 2;
+                                info.min_points--;
+                            }
+                            else {
+                                ConnectChains(rccode, chains, it);
+                            }
+                        }
+                        back -= 2;
+                        info.min_points--;
                     }
 
                 }
 
-                // Other Min points
-                //for (; match_it != l.end(); match_it++) {
-                //    if ((*match_it) != 253) {
+                while (info.upper_max_points > 0) {
+                    rccode.AddElem(r, c);
+
+                    if (back > 0 && last_found_right) {
+                        it--;
+                    }
+
+                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), false));
+                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), true));
+
+                    if (back > 0 && last_found_right) {
+                        it++;
+                    }
+
+                    last_found_right = true;
+                    back += 2;
+                    info.upper_max_points--;
+                }
+
+                while (info.lower_max_points > 0) {
+                    rccode.AddElem(r, c);
+
+                    if (back > 0 && last_found_right) {
+                        it--;
+                    }
+
+                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), RIGHT));
+                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), LEFT));
+
+                    if (back > 0 && last_found_right) {
+                        it++;
+                    }
+
+                    back += 2;
+                    info.lower_max_points--;
+                }
+
+                // Max points
+                //for (bool already_one = false; match_it != l.end(); match_it++) {
+                //    if ((*match_it) < 254) {
                 //        break;
                 //    }
 
-                //    // New Min point
-                //    ConnectChains(chains, it, false);
-                //    back -= 2;
+                //    RCCodes.push_back(make_unique<RCCode>(r, c));
 
-                //    //if (min_points_found == 0) {
+                //    if (back > 0 && last_found_right) {
+                //        it--;
+                //    }
 
-                //    //}
-                //    //else {
-                //    //    min_points_found--;
-                //    //}
+                //    if ((*match_it) == 254) {
+                //        chains.insert(it, &(RCCodes.back().get()->left));
+                //        chains.insert(it, &(RCCodes.back().get()->right));
+                //    }
+                //    else {
+                //        chains.insert(it, &(RCCodes.back().get()->right));
+                //        chains.insert(it, &(RCCodes.back().get()->left));
+                //    }
+
+                //    if (back > 0 && last_found_right) {
+                //        it++;
+                //    }
+
+                //    back += 2;
+
+                //    already_one = true;
                 //}
 
-                assert(info.min_points < 2);
-
-                if (info.min_points == 1) {
-                    // New Min point
-                    if (l.size() == 2) {
-                        ConnectChains(chains, it);                        
-                    }
-                    if (l.size() == 3) {
-                        if (second_link_equal_to_third_link) {
-                            list<RCCode::chain*>::iterator third_chain = it;
-                            third_chain--;
-                            ConnectChains(chains, third_chain);
-                            back -= 2;
-                            info.min_points--;
-                        }
-                        else {
-                            ConnectChains(chains, it);
-                        }
-                    }
-                    back -= 2;
-                    info.min_points--;
-                }
-
-            }
-
-            while (info.upper_max_points > 0) {
-                RCCodes.push_back(make_unique<RCCode>(r, c));
-
-                if (back > 0 && last_found_right) {
-                    it--;
-                }
-
-                chains.insert(it, &(RCCodes.back().get()->left));
-                chains.insert(it, &(RCCodes.back().get()->right));
-
-                if (back > 0 && last_found_right) {
-                    it++;
-                }
-
-                last_found_right = true;
-                back += 2;
-                info.upper_max_points--;
-            }
-
-            while (info.lower_max_points > 0) {
-                RCCodes.push_back(make_unique<RCCode>(r, c));
-
-                if (back > 0 && last_found_right) {
-                    it--;
-                }
-
-                chains.insert(it, &(RCCodes.back().get()->right));
-                chains.insert(it, &(RCCodes.back().get()->left));
-
-                if (back > 0 && last_found_right) {
-                    it++;
-                }
-
-                back += 2;
-                info.lower_max_points--;
-            }
-
-            // Max points
-            //for (bool already_one = false; match_it != l.end(); match_it++) {
-            //    if ((*match_it) < 254) {
-            //        break;
-            //    }
-
-            //    RCCodes.push_back(make_unique<RCCode>(r, c));
-
-            //    if (back > 0 && last_found_right) {
-            //        it--;
-            //    }
-
-            //    if ((*match_it) == 254) {
-            //        chains.insert(it, &(RCCodes.back().get()->left));
-            //        chains.insert(it, &(RCCodes.back().get()->right));
-            //    }
-            //    else {
-            //        chains.insert(it, &(RCCodes.back().get()->right));
-            //        chains.insert(it, &(RCCodes.back().get()->left));
-            //    }
-
-            //    if (back > 0 && last_found_right) {
-            //        it++;
-            //    }
-
-            //    back += 2;
-
-            //    already_one = true;
             //}
 
-        //}
+            //else {
+            //    back = 0;
+            //}
+                if (info.single_pixel) {
+                    rccode.AddElem(r, c);
+                }
 
-        //else {
-        //    back = 0;
-        //}
-            if (info.single_pixel) {
-                RCCodes.push_back(make_unique<RCCode>(r, c));
+            }
+        }
+
+        // Convert to Freeman Chain Code
+        ChainCode cc(rccode);
+
+        // Convert Freeman Chain Code to Contours
+        vector<vector<Point>> contours;
+        for (const auto& chain : cc) {
+
+            unsigned row = chain.row, col = chain.col;
+
+            vector<Point> contour;
+
+            contour.emplace_back(col, row);
+
+            for (auto val : chain) {
+
+                // Update col
+                uint8_t tmp_col = (val + 1) % 8;
+                if (tmp_col < 3) {
+                    col++;
+                }
+                else if (3 < tmp_col && tmp_col < 7) {
+                    col--;
+                }
+
+                // Update row
+                uint8_t tmp_row = val;
+                if (0 < tmp_row && tmp_row < 4) {
+                    row--;
+                }
+                else if (4 < tmp_row) {
+                    row++;
+                }
+
+                contour.emplace_back(col, row);
             }
 
+            contours.push_back(contour);
         }
+
+        Mat1b rec(mat.size(), 0);
+
+        drawContours(rec, contours, -1, 1, FILLED);
+
+        Mat1b diff = (mat != rec);
+
+        bool correct = (countNonZero(diff) == 0);
+
+        if (correct) {
+            //return EXIT_SUCCESS;
+        }
+        else {
+            return EXIT_FAILURE;
+        }
+
     }
 
-    // Convert to Freeman Chain Code
-    ChainCode cc(RCCodes);
-
-    return EXIT_SUCCESS;
 }
 
 
