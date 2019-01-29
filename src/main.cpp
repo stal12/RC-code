@@ -156,9 +156,9 @@ using Template = const int8_t[9];
 
 
 struct PixelInfo {
-    list<uint8_t> links;
-    uint8_t upper_max_points = 0;
-    uint8_t lower_max_points = 0;
+    vector<uint8_t> links;
+    bool upper_max_point = false;
+    bool lower_max_point = false;
     uint8_t min_points = 0;
     bool single_pixel = false;
 };
@@ -211,29 +211,7 @@ struct TemplateCheck {
         {0, 0, 0, 0, 1, 0, 0, 0, 0}
 
     };
-    /* static const array<const Template, 20> templates {
-         Template{0, 0, 0, 0, 1, 1, 1, -1, -1},
-         Template{0, 0, 0, 0, 1, 0, 1, -1, 1},
-         Template{0, 0, 0, 0, 1, 1, 0, 1, -1},
-         Template{0, 0, 0, 0, 1, 0, 1, 1, 0},
-         Template{0, 0, 0, 0, 1, 0, 0, 1, 1},
-         Template{0, 0, 0, 0, 1, 1, 0, 0, 1},
-         Template{0, 0, 0, 0, 1, 0, 1, 0, 0},
-         Template{0, 0, 0, 0, 1, 0, 0, 1, 0},
-         Template{0, 0, 0, 0, 1, 0, 0, 0, 1},
-         Template{0, 0, 0, 0, 1, 1, 0, 0, 0},
-         Template{-1, -1, -1, -1, 1, 1, 1, 0, 0},
-         Template{-1, -1, -1, -1, 1, -1, 1, 0, 1},
-         Template{0, 0, -1, 1, 1, -1, -1, -1, -1},
-         Template{-1, -1, -1, 1, 1, -1, 0, 0, -1},
-         Template{1, 0, -1, -1, 1, -1, -1, -1, -1},
-         Template{1, -1, -1, 0, 1, -1, -1, -1, -1},
-         Template{0, 1, -1, 0, 1, -1, -1, -1, -1},
-         Template{-1, 1, 0, -1, 1, 0, -1, -1, -1},
-         Template{-1, 0, 1, -1, 1, -1, -1, -1, -1},
-         Template{-1, -1, 1, -1, 1, 0, -1, -1, -1}
-     };
- */
+
 
     static bool TemplateMatch(const Mat1b& mat, unsigned temp, int r, int c) {
         uint8_t i = 0;
@@ -266,7 +244,7 @@ struct TemplateCheck {
         for (unsigned i = 0; i < 8; i++) {
 
             if (TemplateMatch(mat, i, r, c)) {
-                info.links.push_back(i);
+                info.links.push_back(i / 2);
             }
 
         }
@@ -280,20 +258,22 @@ struct TemplateCheck {
 
         }
 
-        // Max points sopra
+        // Max point sopra
         for (unsigned i = 0; i < 10; i++) {
 
             if (TemplateMatch(mat, i + 20, r, c)) {
-                info.upper_max_points++;
+                info.upper_max_point = true;
+                break;
             }
 
         }
 
-        // Max points sotto
+        // Max point sotto
         for (unsigned i = 0; i < 2; i++) {
 
             if (TemplateMatch(mat, i + 30, r, c)) {
-                info.lower_max_points++;
+                info.lower_max_point = true;
+                break;
             }
 
         }
@@ -332,8 +312,8 @@ void ConnectChains(RCCode& rccode, list<pair<unsigned, bool>>& chains, list<pair
 int main(void) {
 
     unsigned n_tests = 100000;
-    unsigned rows = 50;
-    unsigned cols = 50;
+    unsigned rows = 10;
+    unsigned cols = 10;
     unsigned arrow_length = 50;
 
     Mat1b mat(rows, cols);
@@ -372,207 +352,105 @@ int main(void) {
         for (int r = 0; r < mat.rows; r++) {
             list<pair<unsigned, bool>>::iterator it = chains.begin();
 
-            // How may former chains can receive horizontal (0) links
-            uint8_t back = 0;
-
             for (int c = 0; c < mat.cols; c++) {
                 PixelInfo info = TemplateCheck::Check(mat, r, c);
 
-                list<uint8_t>::iterator match_it = info.links.begin();
+                vector<uint8_t>::iterator links_it = info.links.begin();
 
-                list<uint8_t>& l = info.links;
+                vector<uint8_t>& links = info.links;
 
                 bool last_found_right = false;
 
                 bool second_link_equal_to_third_link = false;
 
-                if (match_it != info.links.end()) {
+                if (links_it != info.links.end()) {
 
                     // Move the list iterator back if 0 can be added to former chains
-                    if ((*match_it) / 2 == 0) {
+                    if ((*links_it) == 0) {
                         it--;
-                        match_it++;
-                        if ((match_it != l.end()) && (*match_it) / 2 == 0) {
+                        links_it++;
+                        if ((links_it != links.end()) && (*links_it) == 0) {
                             it--;
                         }
                     }
-                    back = 0;
 
                     // Run through the list of template matches
-                    match_it = l.begin();
+                    links_it = links.begin();
 
                     // Chains' links
                     uint8_t links_found = 0;
-                    for (; l.size() > 0 && match_it != l.end();) {
-                        uint8_t val = (*match_it);
-                        if (val > (4 * 2)) {
-                            break;
-                        }
-                        rccode[(*it).first][(*it).second].push_back(val / 2);
-                        back++;
+                    for (uint8_t val_prev; links.size() > 0 && links_it != links.end();) {
+                        uint8_t val = (*links_it);
+                        rccode[(*it).first][(*it).second].push_back(val);
                         links_found++;
-                        //chains_met++;
                         last_found_right = (*it).second;
                         it++;
-
-                        // Detect and resolve Min point
-                        list<uint8_t>::iterator match_it_cur = l.end();
-
-                        if (match_it != l.begin()) {
-                            match_it_cur = match_it;
+                        
+                        if (links_found == 3 && val == val_prev) {
+                            second_link_equal_to_third_link = true;
                         }
 
-                        match_it++;
+                        links_it++;
 
-                        if (links_found > 2 && match_it_cur != l.end()) {
-                            list<uint8_t>::iterator match_it_prev = match_it_cur;
-                            match_it_prev--;
-                            if ((val / 2) != ((*match_it_prev) / 2)) {
-
-                                //// Check that this point is indeed a Min point
-                                //list<uint8_t>::iterator min_it = match_it;
-                                //for (; min_it != l.end() && (*min_it) < 254; min_it++) {
-                                //    if ((*min_it) == 253) {
-                                //        break;
-                                //    }
-                                //}
-                                //if (min_it != l.end() && (*min_it) == 253) {
-
-                                if (info.min_points > 0) {
-
-                                    ConnectChains(rccode, chains, it);
-
-                                    // Remove values from match list
-                                    l.erase(match_it_prev, match_it);
-
-                                    // Remove Min point from info
-                                    info.min_points--;
-
-                                    back -= 2;
-                                }
-                            }
-                            else {
-                                second_link_equal_to_third_link = true;
-                            }
-                        }
-
+                        val_prev = val;
                     }
 
-                    // Other Min points
-                    //for (; match_it != l.end(); match_it++) {
-                    //    if ((*match_it) != 253) {
-                    //        break;
-                    //    }
-
-                    //    // New Min point
-                    //    ConnectChains(chains, it, false);
-                    //    back -= 2;
-
-                    //    //if (min_points_found == 0) {
-
-                    //    //}
-                    //    //else {
-                    //    //    min_points_found--;
-                    //    //}
-                    //}
-
-                    assert(info.min_points < 2);
-
+                    // Min points
                     if (info.min_points == 1) {
                         // New Min point
-                        if (l.size() == 2) {
+                        if (links.size() == 2) {
                             ConnectChains(rccode, chains, it);
                         }
-                        if (l.size() == 3) {
+                        else if (links.size() == 3) {
                             if (second_link_equal_to_third_link) {
                                 list<pair<unsigned, bool>>::iterator third_chain = it;
                                 third_chain--;
                                 ConnectChains(rccode, chains, third_chain);
-                                back -= 2;
-                                info.min_points--;
                             }
                             else {
                                 ConnectChains(rccode, chains, it);
                             }
                         }
-                        back -= 2;
-                        info.min_points--;
+                        else {
+                            list<pair<unsigned, bool>>::iterator fourth_chain = it;
+                            fourth_chain--;
+                            ConnectChains(rccode, chains, fourth_chain);
+                        }
+                    }
+                    else if (info.min_points == 2) {
+                        list<pair<unsigned, bool>>::iterator fourth_chain = it;
+                        fourth_chain--;
+                        ConnectChains(rccode, chains, fourth_chain);
+                        ConnectChains(rccode, chains, it);
                     }
 
                 }
 
-                while (info.upper_max_points > 0) {
+                if (info.upper_max_point) {
                     rccode.AddElem(r, c);
 
-                    if (back > 0 && last_found_right) {
-                        it--;
-                    }
-
-                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), false));
-                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), true));
-
-                    if (back > 0 && last_found_right) {
-                        it++;
-                    }
+                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), LEFT));
+                    chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), RIGHT));
 
                     last_found_right = true;
-                    back += 2;
-                    info.upper_max_points--;
                 }
 
-                while (info.lower_max_points > 0) {
+                if (info.lower_max_point) {
                     rccode.AddElem(r, c);
 
-                    if (back > 0 && last_found_right) {
+                    if (last_found_right) {
                         it--;
                     }
 
                     chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), RIGHT));
                     chains.insert(it, make_pair<unsigned, bool>(static_cast<unsigned>(rccode.Size() - 1), LEFT));
 
-                    if (back > 0 && last_found_right) {
+                    if (last_found_right) {
                         it++;
                     }
 
-                    back += 2;
-                    info.lower_max_points--;
                 }
 
-                // Max points
-                //for (bool already_one = false; match_it != l.end(); match_it++) {
-                //    if ((*match_it) < 254) {
-                //        break;
-                //    }
-
-                //    RCCodes.push_back(make_unique<RCCode>(r, c));
-
-                //    if (back > 0 && last_found_right) {
-                //        it--;
-                //    }
-
-                //    if ((*match_it) == 254) {
-                //        chains.insert(it, &(RCCodes.back().get()->left));
-                //        chains.insert(it, &(RCCodes.back().get()->right));
-                //    }
-                //    else {
-                //        chains.insert(it, &(RCCodes.back().get()->right));
-                //        chains.insert(it, &(RCCodes.back().get()->left));
-                //    }
-
-                //    if (back > 0 && last_found_right) {
-                //        it++;
-                //    }
-
-                //    back += 2;
-
-                //    already_one = true;
-                //}
-
-            //}
-
-            //else {
-            //    back = 0;
-            //}
                 if (info.single_pixel) {
                     rccode.AddElem(r, c);
                 }
@@ -637,50 +515,3 @@ int main(void) {
     }
 
 }
-
-
-
-//if (v.front() == 255) {
-//    // Max point         
-//    RCCodes.push_back(make_unique<RCCode>(r, c));
-//
-//    chains.insert(it, &RCCodes.back()->left);
-//    chains.insert(it, &RCCodes.back()->right);
-//
-//    back = 2;
-//}
-//else {
-//    if (s.size() == 1) {
-//        if ((*s.begin()) != 0) {
-//            it++;
-//        }
-//        (*it)->push_back(*s.begin());
-//    }
-//    else if (s.size() == 2) {
-//        // Min point
-
-//        // Facciamoci dare i valori
-//        set<uint8_t>::const_iterator set_it = s.begin();
-//        const uint8_t &small = *set_it;
-//        set_it++;
-//        const uint8_t &big = *set_it;
-
-//        if (small != 0) {
-//            it++;
-//        }
-
-//        // Setta il puntatore al prossimo maxpoint
-//        auto cur_it = it;
-//        it++;
-//        auto next_it = it;
-//        it++;
-//        (*cur_it)->maxpoint->next = (*next_it)->maxpoint;
-//        
-//        // Aggiungi il valore maggiore alla catena corrente, e il valore minore alla catena prossima
-//        (*cur_it)->push_back(small);
-//        (*next_it)->push_back(big);
-
-//        // Remove the two chains from the list
-//        chains.erase(cur_it, it);
-//    }
-//}
