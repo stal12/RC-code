@@ -92,7 +92,7 @@ include_directories( "." )
 # OpenCV 
 # --------------------
 
-set(OpenCV_REQUIRED_PACKAGES "core;imgcodecs;imgproc;highgui" CACHE STRING "OpenCV required packages")
+set(OpenCV_REQUIRED_PACKAGES "core;imgcodecs;imgproc" CACHE STRING "OpenCV required packages")
 
 FIND_PACKAGE(OpenCV REQUIRED ${OpenCV_REQUIRED_PACKAGES})
 include_directories( ${OpenCV_INCLUDE_DIRS} )
